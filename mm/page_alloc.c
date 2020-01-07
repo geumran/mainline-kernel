@@ -2024,15 +2024,26 @@ void __init init_cma_reserved_pageblock(struct page *page)
  *
  * -- nyc
  */
+/* 
+ * 요청하고 남은 page를 free list에추가한다.
+ * (low - 요청한 page order, high - 할당해준 page order)
+ * 할당해 준 page order가 요청한 page order보다 큰 경우,
+ * 남은 page를 요청 order의 free list까지 추가한다.
+*/
 static inline void expand(struct zone *zone, struct page *page,
 	int low, int high, struct free_area *area,
 	int migratetype)
 {
+
+   	// size 계산
 	unsigned long size = 1 << high;
 
+   	// high값이 low값보다 큰 경우에 수행
 	while (high > low) {
+      		// area, high를 N-1
 		area--;
 		high--;
+      		// size는 size%2
 		size >>= 1;
 		VM_BUG_ON_PAGE(bad_range(zone, &page[size]), &page[size]);
 
@@ -2042,10 +2053,12 @@ static inline void expand(struct zone *zone, struct page *page,
 		 * Corresponding page table entries will not be touched,
 		 * pages will stay not present in virtual address space
 		 */
+      		// guard page로set 한다?
 		if (set_page_guard(zone, &page[size], high, migratetype))
 			continue;
-
+      		// 나누기 2한 size의 page를 해당freearea에add한다.
 		add_to_free_area(&page[size], area, migratetype);
+      		// page에 high order를저장한다.
 		set_page_order(&page[size], high);
 	}
 }
@@ -2189,22 +2202,38 @@ static void prep_new_page(struct page *page, unsigned int order, gfp_t gfp_flags
  * Go through the free lists for the given migratetype and remove
  * the smallest available page from the freelists
  */
+/* 
+ * 요청한 order를 시작으로 MAX_ORDER-1 까지 1씩 증가시키며 free page를
+ * 할당받는다.
+ * 해당 order의 free_list에서 할당받은 경우, 할당 후 free_list에서 삭제.
+ * 해당 order보다 큰 order에서 할당받은 경우, expand에서 남은 page를 하위
+ * order에 추가.
+ * comment by grlee
+*/
 static __always_inline
 struct page *__rmqueue_smallest(struct zone *zone, unsigned int order,
 						int migratetype)
 {
+   /* 
 	unsigned int current_order;
 	struct free_area *area;
 	struct page *page;
 
 	/* Find a page of the appropriate size in the preferred list */
+   	// current_order를 요청한 order를 시작으로 MAX_ORDER-1 까지 1씩 증가시킴
 	for (current_order = order; current_order < MAX_ORDER; ++current_order) {
+      		// area는 current_order에 해당하는 free_area의 주소
 		area = &(zone->free_area[current_order]);
+      		// page를 freearea로 부터 가져옴
 		page = get_page_from_free_area(area, migratetype);
+      		// page가 없으면for문 시작으로 돌아감
 		if (!page)
 			continue;
+      		// page 할당후 해당 free_area에서 삭제
 		del_page_from_free_area(page, area);
+      		// 요첨한 order 보다 큰order에서 page를 가져온 경우 남은page를하위 orer에 추가
 		expand(zone, page, order, current_order, area, migratetype);
+      		// 해당 page에 마이그레션타입을 구해서 페이지에 설정
 		set_pcppage_migratetype(page, migratetype);
 		return page;
 	}
@@ -2230,9 +2259,11 @@ static int fallbacks[MIGRATE_TYPES][4] = {
 };
 
 #ifdef CONFIG_CMA
+/* CMA 영역에서 page 할당- commont by grlee*/
 static __always_inline struct page *__rmqueue_cma_fallback(struct zone *zone,
 					unsigned int order)
 {
+	// migration type을 CMA로 하여 __rmqueue_smallest 호출
 	return __rmqueue_smallest(zone, order, MIGRATE_CMA);
 }
 #else
@@ -2481,11 +2512,14 @@ int find_suitable_fallback(struct free_area *area, unsigned int order,
 	int i;
 	int fallback_mt;
 
+	// ?
 	if (area->nr_free == 0)
 		return -1;
 
 	*can_steal = false;
+	// i = 0 부터 1씩 증가시키며 수행
 	for (i = 0;; i++) {
+		// fallback_mt 는 
 		fallback_mt = fallbacks[migratetype][i];
 		if (fallback_mt == MIGRATE_TYPES)
 			break;
@@ -2634,6 +2668,9 @@ static bool unreserve_highatomic_pageblock(const struct alloc_context *ac,
  * deviation from the rest of this file, to make the for loop
  * condition simpler.
  */
+/*
+ * comment by grlee
+ */
 static __always_inline bool
 __rmqueue_fallback(struct zone *zone, int order, int start_migratetype,
 						unsigned int alloc_flags)
@@ -2650,6 +2687,7 @@ __rmqueue_fallback(struct zone *zone, int order, int start_migratetype,
 	 * i.e. orders < pageblock_order. If there are no local zones free,
 	 * the zonelists will be reiterated without ALLOC_NOFRAGMENT.
 	 */
+	// ALLOC_NOFRAGMENT인 경우 min_order를 pageblock_order로 한다.
 	if (alloc_flags & ALLOC_NOFRAGMENT)
 		min_order = pageblock_order;
 
@@ -2658,11 +2696,15 @@ __rmqueue_fallback(struct zone *zone, int order, int start_migratetype,
 	 * approximates finding the pageblock with the most free pages, which
 	 * would be too costly to do exactly.
 	 */
+	// current_order를 MAX_ORDER-1 부터 min_order까지 -1하여 fall back
 	for (current_order = MAX_ORDER - 1; current_order >= min_order;
 				--current_order) {
+		// area는 curreunt area에 해당하는 free_area의 주소 값
 		area = &(zone->free_area[current_order]);
+		// current_order를감소시키며 call
 		fallback_mt = find_suitable_fallback(area, current_order,
 				start_migratetype, false, &can_steal);
+		// fall back 실패 시 for 문 처음으로 돌아감
 		if (fallback_mt == -1)
 			continue;
 
@@ -2674,16 +2716,22 @@ __rmqueue_fallback(struct zone *zone, int order, int start_migratetype,
 		 * allocation falls back into a different pageblock than this
 		 * one, it won't cause permanent fragmentation.
 		 */
+		// free page를 steal하지 못했고,
+		// start_migratetype이 MIGRATE_MOVABLE,
+		// current order가 order보다 크면 find_smallest로 이동
 		if (!can_steal && start_migratetype == MIGRATE_MOVABLE
 					&& current_order > order)
 			goto find_smallest;
 
+		// 위의 if문에 해당하지 않는 경우 do_steal로이동
 		goto do_steal;
 	}
 
 	return false;
 
 find_smallest:
+	// currenet_order는 order를 시작으로 MAX_ORDER-1 까지 1씩 증가시키며
+	// fallback을 수행한다.
 	for (current_order = order; current_order < MAX_ORDER;
 							current_order++) {
 		area = &(zone->free_area[current_order]);
@@ -2697,9 +2745,11 @@ find_smallest:
 	 * This should not happen - we already found a suitable fallback
 	 * when looking for the largest page.
 	 */
+	// curent_order가 MAX_ORDER이면 bug?
 	VM_BUG_ON(current_order == MAX_ORDER);
 
 do_steal:
+	// fallback에 성공한 migratetype의 area로 부터 page를 할당받음
 	page = get_page_from_free_area(area, fallback_mt);
 
 	steal_suitable_fallback(zone, page, alloc_flags, start_migratetype,
@@ -2716,6 +2766,14 @@ do_steal:
  * Do the hard work of removing an element from the buddy allocator.
  * Call me with the zone->lock already held.
  */
+/*
+ * 요청한 migratetype에 해당하는 page를 할당한다.
+ * 이 때 free page가 없으면 migration type이 movable인 경우 CMA영역에서
+ * page 할당을 시도한다.
+ * migration type이CMA영역이 아니거나, CMA영역에서 할당에 실패한경우
+ * fallback migration type 리스트를 이용 page 할당 시도한다.
+ * comment by grlee
+*/
 static __always_inline struct page *
 __rmqueue(struct zone *zone, unsigned int order, int migratetype,
 						unsigned int alloc_flags)
@@ -2723,16 +2781,24 @@ __rmqueue(struct zone *zone, unsigned int order, int migratetype,
 	struct page *page;
 
 retry:
+	// 요청한 migratetype으로 page를 할당 받음
 	page = __rmqueue_smallest(zone, order, migratetype);
+	// page 할당 실패한 경우
 	if (unlikely(!page)) {
+		/* migration type이 movable인경우
+		 * CMA영역에서 page 할당 시도
+		 */
 		if (migratetype == MIGRATE_MOVABLE)
 			page = __rmqueue_cma_fallback(zone, order);
-
+		/* CMA영역에서 page 할당 시도 실패하고,
+		 * fallback migration type 리스트에서
+		 * free page를 찾은 경우 retry로 이동
+		 */
 		if (!page && __rmqueue_fallback(zone, order, migratetype,
 								alloc_flags))
 			goto retry;
 	}
-
+	// ?
 	trace_mm_page_alloc_zone_locked(page, order, migratetype);
 	return page;
 }
@@ -2742,19 +2808,28 @@ retry:
  * a single hold of the lock, for efficiency.  Add them to the supplied list.
  * Returns the number of new pages which were placed at *list.
  */
+ /* 
+  * buddy allocator를 요청받은 page수 만큼 호출해서 pcp list 끝에 추가한다.
+  * comment by grlee
+  */
 static int rmqueue_bulk(struct zone *zone, unsigned int order,
 			unsigned long count, struct list_head *list,
 			int migratetype, unsigned int alloc_flags)
 {
 	int i, alloced = 0;
 
+	// 해당 zone을 lock?
 	spin_lock(&zone->lock);
+	// 지정한 count값 만큼 page를 할당받아서 pcp list에 추가함. 
 	for (i = 0; i < count; ++i) {
+		// page를 buddy allocator 로 부터 할당 받음
 		struct page *page = __rmqueue(zone, order, migratetype,
 								alloc_flags);
+		// page가 NULL이면 loop문 빠져나감
 		if (unlikely(page == NULL))
 			break;
 
+		// page 확인해서 for문으로 돌아감 ?
 		if (unlikely(check_pcp_refill(page)))
 			continue;
 
@@ -2768,8 +2843,13 @@ static int rmqueue_bulk(struct zone *zone, unsigned int order,
 		 * for IO devices that can merge IO requests if the physical
 		 * pages are ordered properly.
 		 */
+		// page를 list 끝에 추가
 		list_add_tail(&page->lru, list);
+		// alloced counter를 1 증가시킴
 		alloced++;
+		/* page의 migration type이 CMA이면
+	     	 * NR_FREE_CMA_PAGES stat 카운터를 페이지 수  만큼 감소시킴
+		 */
 		if (is_migrate_cma(get_pcppage_migratetype(page)))
 			__mod_zone_page_state(zone, NR_FREE_CMA_PAGES,
 					      -(1 << order));
@@ -2781,8 +2861,14 @@ static int rmqueue_bulk(struct zone *zone, unsigned int order,
 	 * on i. Do not confuse with 'alloced' which is the number of
 	 * pages added to the pcp list.
 	 */
+	/*
+	 * pcp_list에 page 추가 완료 후 NR_FREE_PAGES state 카운터를
+	 * count * 2^order 즉, pcp list에 추가한 page 수만큼 감소시킴
+	 */
 	__mod_zone_page_state(zone, NR_FREE_PAGES, -(i << order));
+	// 해당 zone을 unlock?
 	spin_unlock(&zone->lock);
+	// pcp_list 에 추가한 page 수를 return
 	return alloced;
 }
 
@@ -3212,6 +3298,13 @@ static inline void zone_statistics(struct zone *preferred_zone, struct zone *z)
 }
 
 /* Remove page from the per-cpu list, caller must protect the list */
+/* 
+ * pcp list로 부터 page를 할당 받는다.
+ * pcp list가 empty가 아니면pcp list에서 page를 바로 할당,
+ * empty 이면 buddy allocator를 통해 page를 할당 받아pcp list에 추가 후
+ * page를 할당받는다. 이 때 pcp list의 맨앞 page를 할당받음.
+ * comment by grlee
+ */
 static struct page *__rmqueue_pcplist(struct zone *zone, int migratetype,
 			unsigned int alloc_flags,
 			struct per_cpu_pages *pcp,
@@ -3220,23 +3313,35 @@ static struct page *__rmqueue_pcplist(struct zone *zone, int migratetype,
 	struct page *page;
 
 	do {
+		// list가 empty이면
 		if (list_empty(list)) {
+			// rmqueue_bulk로 pcp list에 page를 추가하고,
+			// 할당받은 page 수만큼 count를 증가시킴
 			pcp->count += rmqueue_bulk(zone, 0,
 					pcp->batch, list,
 					migratetype, alloc_flags);
+			// list가 empty가 아니면 loop문 빠져나옴
 			if (unlikely(list_empty(list)))
 				return NULL;
 		}
-
+		// pcp list의 맨앞에서 page를 할당받음
 		page = list_first_entry(list, struct page, lru);
 		list_del(&page->lru);
 		pcp->count--;
+	// page에 문제가 있는지 확인
 	} while (check_new_pcp(page));
 
+	// page를 반환 함
 	return page;
 }
 
 /* Lock and remove page from the per-cpu list */
+/* 
+ * 로컬 인터럽트를 disable 시킨 상태에서
+ * 요청한 page를 pcp list로 부터 할당받아 반환하고,
+ * 그 후에 로컬 인터럽트를 enable 한다.
+ * comment by grlee
+ */
 static struct page *rmqueue_pcplist(struct zone *preferred_zone,
 			struct zone *zone, gfp_t gfp_flags,
 			int migratetype, unsigned int alloc_flags)
@@ -3246,20 +3351,36 @@ static struct page *rmqueue_pcplist(struct zone *preferred_zone,
 	struct page *page;
 	unsigned long flags;
 
+	// 로컬 인터럽트 disable?
 	local_irq_save(flags);
+	// pcp는 요청받은 zone의 pcp 주소
 	pcp = &this_cpu_ptr(zone->pageset)->pcp;
+	// list는 요청받은 migration type에 해당하는 pcp_list를 가르킴
 	list = &pcp->lists[migratetype];
+	// 요청받은 page를 pcp에서 할당 받음
 	page = __rmqueue_pcplist(zone,  migratetype, alloc_flags, pcp, list);
+	// page 할당에 성공하면 PGALLOC 카운터를 page 수 만큼 증가시킴?
 	if (page) {
 		__count_zid_vm_events(PGALLOC, page_zonenum(page), 1);
+		// ?
 		zone_statistics(preferred_zone, zone);
 	}
+	// 로컬 인터럽트 enable?
 	local_irq_restore(flags);
 	return page;
 }
 
 /*
  * Allocate a page from the given zone. Use pcplists for order-0 allocations.
+ */
+/*
+ * page 할당을 시도한다.
+ * order 가 0인 경우 pcp list로 부터 page를 할당받으며,
+ * order 가 0보다 큰 경우에는
+ * 우선 ALLOC_HARDER flag가 사용 된 경우 migration type을
+ * MIGRATE_HIGHATOMIC으로 하여 buddy allocator를 통해 page할당 시도하며,
+ * ALLOC_HARDER flag가 사용되지 않은 경우에는 주어진 migration type으로
+ * page 할당을 시도한다.
  */
 static inline
 struct page *rmqueue(struct zone *preferred_zone,
@@ -3270,6 +3391,7 @@ struct page *rmqueue(struct zone *preferred_zone,
 	unsigned long flags;
 	struct page *page;
 
+	// order가 0인 경우 pcp list로 부터 page를 할당 받고 out으로 이동
 	if (likely(order == 0)) {
 		page = rmqueue_pcplist(preferred_zone, zone, gfp_flags,
 					migratetype, alloc_flags);
@@ -3280,40 +3402,58 @@ struct page *rmqueue(struct zone *preferred_zone,
 	 * We most definitely don't want callers attempting to
 	 * allocate greater than order-1 page units with __GFP_NOFAIL.
 	 */
+	// ?
 	WARN_ON_ONCE((gfp_flags & __GFP_NOFAIL) && (order > 1));
 	spin_lock_irqsave(&zone->lock, flags);
 
+	// order가 0이 아닌 경우 page 할당
 	do {
+		// page NULL 상태로 함
 		page = NULL;
+		/*
+		 * ALLOC_HARDER flag가 사용 된 경우
+		 * migration type을 HIGRATE_HIGHATOMIC으로 하여 page 할당
+		 */
 		if (alloc_flags & ALLOC_HARDER) {
 			page = __rmqueue_smallest(zone, order, MIGRATE_HIGHATOMIC);
 			if (page)
 				trace_mm_page_alloc_zone_locked(page, order, migratetype);
 		}
+		// ALLOC_HARDER flag가 사용되지 않거나, 할당에 실패한 경우page 할당
 		if (!page)
 			page = __rmqueue(zone, order, migratetype, alloc_flags);
+	// 할당받은 page에 문제가 없는지 확인
 	} while (page && check_new_pages(page, order));
+	// ?
 	spin_unlock(&zone->lock);
+	// page 할당에 실패한 경우failed로 이동
 	if (!page)
 		goto failed;
+	// free 페이지카운터를 감소시킴
 	__mod_zone_freepage_state(zone, -(1 << order),
 				  get_pcppage_migratetype(page));
 
+	// PGALLOC 카운터는 페이지크기만큼 감소?
 	__count_zid_vm_events(PGALLOC, page_zonenum(page), 1 << order);
+	// 요청한 존에서 할당했는지에 대한 state 반영?
 	zone_statistics(preferred_zone, zone);
+	// ?
 	local_irq_restore(flags);
 
 out:
 	/* Separate test+clear to avoid unnecessary atomics */
+	// page 할당에 성공한 경우 wartermark & kswapd 처리 ? 
 	if (test_bit(ZONE_BOOSTED_WATERMARK, &zone->flags)) {
 		clear_bit(ZONE_BOOSTED_WATERMARK, &zone->flags);
 		wakeup_kswapd(zone, 0, 0, zone_idx(zone));
 	}
 
 	VM_BUG_ON_PAGE(page && bad_range(zone, page), page);
+	// page를 반환 함
 	return page;
 
 failed:
+	// page 할당에 실패한 경우 NULL을 반환
 	local_irq_restore(flags);
 	return NULL;
 }
@@ -3576,6 +3716,10 @@ alloc_flags_nofragment(struct zone *zone, gfp_t gfp_mask)
  * get_page_from_freelist goes through the zonelist trying to allocate
  * a page.
  */
+/*
+ *
+ * comment by grlee
+ */
 static struct page *
 get_page_from_freelist(gfp_t gfp_mask, unsigned int order, int alloc_flags,
 						const struct alloc_context *ac)
@@ -3590,13 +3734,22 @@ retry:
 	 * Scan zonelist, looking for a zone with enough free.
 	 * See also __cpuset_node_allowed() comment in kernel/cpuset.c.
 	 */
+	// ALLOC_NOFRAGMENT flag가 사용된 경우 no fallback 임.
 	no_fallback = alloc_flags & ALLOC_NOFRAGMENT;
+	// z 는 선호하는 zone ?
 	z = ac->preferred_zoneref;
+	/*
+	 * zonelist에서 high_zoneidx 이하의 zone이면서 nodemask에 설정된
+	 * 노드인 zone 엔트리들에 대해 loop 를 돔
+	 */
 	for_next_zone_zonelist_nodemask(zone, z, ac->zonelist, ac->high_zoneidx,
 								ac->nodemask) {
 		struct page *page;
 		unsigned long mark;
 
+		// cpusets 이 활성화 되어있고, ALLOC_CPUSET flag가 설정 된 경우
+		// 현재 태스크에 지정된 노드의 해당 존으로 할당할 수 없다면
+		// loop 시작으로 돌아감
 		if (cpusets_enabled() &&
 			(alloc_flags & ALLOC_CPUSET) &&
 			!__cpuset_zone_allowed(zone, gfp_mask))
